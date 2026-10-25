@@ -2,7 +2,7 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
 import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
-import { access, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -59,6 +59,7 @@ import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
 import { readDesktopSettings, type DesktopStartupSettings } from './settings.ts'
 import { readDesktopLocaleCache, writeDesktopLocaleCache } from './locale-cache.ts'
 import {
+  describeDesktopLaunchSignals,
   isDesktopSilentStart,
   resolveDesktopStartupCapabilities,
   syncDesktopLoginItem,
@@ -379,6 +380,19 @@ async function main(): Promise<void> {
   /** The tray is what a quiet start leaves behind, so only a platform that ships one goes quiet. */
   const trayAvailable = startupCapabilities.startSilently
   const silentStart = isDesktopSilentStart(startupSettings, trayAvailable)
+  // Leave the evidence of how this launch came to be behind, so a silent-start decision
+  // that guesses wrong can be diagnosed from the log instead of reproduced. Diagnostics
+  // are written to a file because the shell must never print on a quiet start.
+  try {
+    const logsDirectory = app.getPath('logs')
+    const signals = JSON.stringify(describeDesktopLaunchSignals())
+    void mkdir(logsDirectory, { recursive: true })
+      .then(() => writeFile(join(logsDirectory, 'launch-signals.log'),
+        `${new Date().toISOString()} ${signals} -> silentStart=${String(silentStart)}\n`, { flag: 'a' }))
+      .catch(() => { /* diagnostics must never break the launch */ })
+  } catch {
+    // Diagnostics must never break the launch.
+  }
   // Re-assert the registration so the login item keeps following this installation.
   if (startupCapabilities.launchAtLogin) syncDesktopLoginItem(startupSettings.launchAtLogin)
   void pruneCrashReports(app.getPath('logs'))
