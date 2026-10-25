@@ -56,8 +56,9 @@ import { DesktopMandatoryUpdatePolicy, resolveDesktopPolicyConfig, type DesktopP
 import { desktopClientMetadata, desktopClientVersion } from './client-metadata.ts'
 import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
 import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
-import { readDesktopSettings } from './settings.ts'
+import { readDesktopSettings, type DesktopStartupSettings } from './settings.ts'
 import { readDesktopLocaleCache, writeDesktopLocaleCache } from './locale-cache.ts'
+import { isDesktopSilentStart, syncDesktopLoginItem, updateDesktopStartup } from './startup.ts'
 import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
@@ -366,6 +367,13 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 
 async function main(): Promise<void> {
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
+  /** Startup preferences; the menu toggles replace this value and rewrite the document. */
+  let startupSettings: DesktopStartupSettings = desktopSettings.startup
+  /** The tray is what a quiet start leaves behind, so only a platform that ships one goes quiet. */
+  const trayAvailable = process.platform === 'win32'
+  const silentStart = isDesktopSilentStart(startupSettings, trayAvailable)
+  // Re-assert the registration so the login item keeps following this installation.
+  syncDesktopLoginItem(startupSettings.launchAtLogin)
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -1047,6 +1055,24 @@ async function main(): Promise<void> {
       { role: 'hideOthers', label: currentDesktopLocale().messages.hideOtherApplications },
       { role: 'unhide', label: currentDesktopLocale().messages.showAllApplications }, { type: 'separator' }]
     : []
+  /**
+   * Launch preferences, offered wherever the shell exposes its own menu. Both are stored
+   * before the login item is rewritten, so a failed registration cannot leave them disagreeing.
+   */
+  const startupMenuItems = (): MenuItemConstructorOptions[] => {
+    const toggle = (change: Partial<DesktopStartupSettings>): void => {
+      startupSettings = updateDesktopStartup(app.getPath('userData'), startupSettings, change)
+      refreshApplicationMenu()
+    }
+    const messages = currentDesktopLocale().messages
+    return [
+      { type: 'separator' },
+      { type: 'checkbox', checked: startupSettings.launchAtLogin, label: messages.launchAtLoginMenu,
+        click: () => { toggle({ launchAtLogin: !startupSettings.launchAtLogin }) } },
+      { type: 'checkbox', checked: startupSettings.startSilently, label: messages.startSilentlyMenu,
+        click: () => { toggle({ startSilently: !startupSettings.startSilently }) } },
+    ]
+  }
   const applicationItems = (): MenuItemConstructorOptions[] => [
     // Windows has no system About panel; Electron's fallback is a plain
     // message box, so the shell shows its own dimmed dialog instead.
@@ -1058,6 +1084,7 @@ async function main(): Promise<void> {
     { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
     ...process.platform === 'darwin' || process.platform === 'win32'
       ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
+    ...startupMenuItems(),
     ...development ? [
       { type: 'separator' as const },
       { label: currentDesktopLocale().messages.reloadPageMenu, role: 'reload' as const },
@@ -1089,6 +1116,7 @@ async function main(): Promise<void> {
     // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
     try {
       tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
+        extraItems: startupMenuItems,
         open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
     } catch (error) { console.warn('desktop tray: unavailable', error) }
   }
@@ -1211,13 +1239,19 @@ async function main(): Promise<void> {
     })
     return window
   }
-  const enterWorkspace = async ({ activate = true }: { activate?: boolean } = {}): Promise<void> => {
+  const enterWorkspace = async (
+    { activate = true, reveal = true }: { activate?: boolean; reveal?: boolean } = {},
+  ): Promise<void> => {
     if (quitting) return
     const window = mainWindow ?? createMainWindow()
     await navigateMain(applicationUrl)
     if (isQuitting() || recovery.active || window.isDestroyed()) return
-    if (activate) window.show()
-    else window.showInactive()
+    // A quiet start loads the workspace without raising it: the Host and the page run, and the
+    // tray remains as the way back.
+    if (reveal) {
+      if (activate) window.show()
+      else window.showInactive()
+    }
     enteredWorkspace = true
     if (welcomeWindow !== undefined) {
       welcomeWindow.close()
@@ -1226,8 +1260,10 @@ async function main(): Promise<void> {
     welcomeWindow = undefined
     if (raiseAfterUpdate) {
       raiseAfterUpdate = false
-      window.moveTop()
-      window.focus()
+      if (reveal) {
+        window.moveTop()
+        window.focus()
+      }
     }
     if (activate && development && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
       window.webContents.openDevTools({ mode: 'detach' })
@@ -1303,12 +1339,13 @@ async function main(): Promise<void> {
     writeDesktopLocaleCache(app.getPath('userData'), locale.id)
     windowsLanguage = locale.id
     refreshApplicationMenu()
-    if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
+    // A quiet start has no one to show the welcome to; the workspace loads hidden instead.
+    if (!enteredWorkspace && !silentStart && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
       // A later login must retain its own activation policy instead of replaying startup focus.
       raiseAfterUpdate = false
       await showWelcome()
     } else {
-      await enterWorkspace()
+      await enterWorkspace({ reveal: !silentStart })
     }
   }
   focusPrimaryWindow = () => {

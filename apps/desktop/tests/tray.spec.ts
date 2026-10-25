@@ -27,11 +27,11 @@ vi.mock('electron', () => ({
 
 afterEach(() => { native.trays.length = 0; native.menus.length = 0; vi.clearAllMocks() })
 
-function setup(locale = 'en') {
+function setup(locale = 'en', extraItems: () => MenuItemConstructorOptions[] = () => []) {
   let current = resolveDesktopLocale(locale)
   const open = vi.fn()
   const quit = vi.fn()
-  const tray = new DesktopTray({ iconPath: 'C:/app/resources/tray.ico', locale: () => current, open, quit })
+  const tray = new DesktopTray({ iconPath: 'C:/app/resources/tray.ico', locale: () => current, extraItems, open, quit })
   return { tray, open, quit, native: native.trays[0]!, setLocale: (next: string) => { current = resolveDesktopLocale(next) } }
 }
 
@@ -57,6 +57,23 @@ it('opens the window on a single click and routes menu entries to the open and q
   ;(menu[2] as { click: () => void }).click()
   expect(f.open).toHaveBeenCalledTimes(2)
   expect(f.quit).toHaveBeenCalledOnce()
+})
+
+it('places its own entries above the quit entry and reads them again on every rebuild', () => {
+  let checked = false
+  const click = vi.fn(() => { checked = true })
+  const f = setup('en', () => [
+    { type: 'separator' },
+    { type: 'checkbox', label: 'Launch at Login', checked, click },
+  ])
+  expect(labels(native.menus[0]!)).toEqual([
+    'Open DeepSeek Harness', 'separator', 'Launch at Login', 'separator', 'Quit DeepSeek Harness',
+  ])
+  ;(native.menus[0]![2] as { click: () => void }).click()
+  expect(click).toHaveBeenCalledOnce()
+  f.tray.relabel()
+  // The rebuilt menu reflects the state the shell reached after the click.
+  expect(native.menus[1]![2]).toMatchObject({ label: 'Launch at Login', checked: true })
 })
 
 it('relabels the menu in the current locale and ignores relabel after disposal', () => {

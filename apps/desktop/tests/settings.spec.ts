@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest'
-import { readDesktopSettings } from '../src/settings.ts'
+import { readDesktopSettings, writeDesktopStartupSettings } from '../src/settings.ts'
 
 vi.mock('node:fs', async importOriginal => ({ ...await importOriginal<typeof import('node:fs')>() }))
 
@@ -22,8 +22,11 @@ it('creates a discoverable default file on first launch without touching other p
   const { userData, path } = fixture()
   rmSync(join(userData, 'desktop'), { recursive: true })
   writeFileSync(join(userData, 'keybindings.json'), 'existing shortcuts\n')
-  expect(readDesktopSettings(userData)).toEqual({ updates: { allowTestAuthPopupWindow: false } })
-  expect(readFileSync(path, 'utf8')).toBe('{\n  "updates": {\n    "allowTestAuthPopupWindow": false\n  }\n}\n')
+  expect(readDesktopSettings(userData)).toEqual({
+    updates: { allowTestAuthPopupWindow: false },
+    startup: { launchAtLogin: false, startSilently: false },
+  })
+  expect(readFileSync(path, 'utf8')).toBe('{\n  "updates": {\n    "allowTestAuthPopupWindow": false\n  },\n  "startup": {\n    "launchAtLogin": false,\n    "startSilently": false\n  }\n}\n')
   expect(readFileSync(join(userData, 'keybindings.json'), 'utf8')).toBe('existing shortcuts\n')
 })
 
@@ -50,7 +53,9 @@ it('loads explicit opt-in and opt-out on the next read without changing an earli
 
 it.each(['', '{', 'null', '[]', '{"updates":null}', '{"updates":[]}',
   '{"updates":{"allowTestAuthPopupWindow":"false"}}', '{"updates":{"allowTestAuthPopupWindow":1}}',
-  '{"updates":{"allowTestAuthPopupWindow":null}}'])('reports invalid settings with their path and preserves the original: %s', (raw) => {
+  '{"updates":{"allowTestAuthPopupWindow":null}}',
+  '{"startup":null}', '{"startup":[]}',
+  '{"startup":{"launchAtLogin":"false"}}', '{"startup":{"startSilently":1}}'])('reports invalid settings with their path and preserves the original: %s', (raw) => {
   const { userData, path } = fixture()
   writeFileSync(path, raw)
   expect(readDesktopSettings(userData).updates.allowTestAuthPopupWindow).toBe(false)
@@ -80,4 +85,32 @@ it('continues with defaults even when warning output fails', () => {
   vi.mocked(console.warn).mockImplementation(() => { throw new Error('output unavailable') })
   expect(readDesktopSettings(userData).updates.allowTestAuthPopupWindow).toBe(false)
   expect(readFileSync(path, 'utf8')).toBe('{')
+})
+
+it('stores startup preferences while leaving unrelated fields of the document alone', () => {
+  const { userData, path } = fixture()
+  writeFileSync(path, '{"updates":{"allowTestAuthPopupWindow":true},"custom":"keep"}')
+  writeDesktopStartupSettings(userData, { launchAtLogin: true, startSilently: true })
+  expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+    updates: { allowTestAuthPopupWindow: true },
+    custom: 'keep',
+    startup: { launchAtLogin: true, startSilently: true },
+  })
+})
+
+it('creates the startup preferences document when the user has none', () => {
+  const { userData } = fixture()
+  rmSync(join(userData, 'desktop'), { recursive: true })
+  writeDesktopStartupSettings(userData, { launchAtLogin: true, startSilently: true })
+  expect(readDesktopSettings(userData)).toEqual({
+    updates: { allowTestAuthPopupWindow: false },
+    startup: { launchAtLogin: true, startSilently: true },
+  })
+})
+
+it('reads startup preferences back, defaulting an absent section', () => {
+  const { userData, path } = fixture()
+  expect(readDesktopSettings(userData).startup).toEqual({ launchAtLogin: false, startSilently: false })
+  writeFileSync(path, '{"startup":{"launchAtLogin":true}}')
+  expect(readDesktopSettings(userData).startup).toEqual({ launchAtLogin: true, startSilently: false })
 })
