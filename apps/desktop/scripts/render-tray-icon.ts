@@ -1,11 +1,16 @@
 /**
- * Render the Windows tray icon with an enlarged whale from `resources/icon-windows.svg`.
+ * Render the tray icons from the vector application artwork.
  *
- * The tray shows the icon at 16 logical pixels, so Windows picks one of the
- * bundled bitmaps by display scale. Each size is rasterized from the vector
- * source separately instead of downscaling one large bitmap, which keeps edges
- * crisp at every scale. The committed `resources/tray-windows.ico` is the output;
- * rerun `pnpm run render:tray-icon` in `apps/desktop` after changing the vector source.
+ * Windows shows the icon at 16 logical pixels, so it picks one of the bundled bitmaps by
+ * display scale. Each size is rasterized from the vector source separately instead of
+ * downscaling one large bitmap, which keeps edges crisp at every scale.
+ *
+ * macOS tints a menu bar item instead, so it receives a template image: the whale alone as an
+ * alpha mask, at the logical edge and its Retina double.
+ *
+ * The committed `resources/tray-windows.ico`, `resources/tray-darwin.png` and
+ * `resources/tray-darwin@2x.png` are the outputs; rerun `pnpm run render:tray-icon`
+ * in `apps/desktop` after changing a vector source.
  */
 
 import { readFile, writeFile } from 'node:fs/promises'
@@ -20,7 +25,16 @@ export const TRAY_ICON_SIZES = [16, 20, 24, 32, 40, 48, 64] as const
 export const TRAY_ICON_PATHS = {
   source: fileURLToPath(new URL('../resources/icon-windows.svg', import.meta.url)),
   output: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)),
+  darwinSource: fileURLToPath(new URL('../resources/icon-macos.svg', import.meta.url)),
+  darwinOutput: fileURLToPath(new URL('../resources/tray-darwin.png', import.meta.url)),
+  darwinOutputRetina: fileURLToPath(new URL('../resources/tray-darwin@2x.png', import.meta.url)),
 } as const
+
+/**
+ * Menu bar edges of the macOS tray icon: the logical size and its Retina double.
+ * Electron loads the `@2x` file on a high-density display, matching how it treats app icons.
+ */
+export const DARWIN_TRAY_ICON_EDGES = { base: 22, retina: 44 } as const
 
 /** Coordinate space of the vector source; sharp's SVG density is scaled against it. */
 const SOURCE_EDGE = 1024
@@ -109,6 +123,51 @@ export async function renderTrayIconEntries(svg: Buffer, sizes: readonly number[
   })))
 }
 
+/**
+ * Reduce a vector application icon to the glyph a macOS menu bar can tint.
+ *
+ * A template image is an alpha mask: the system paints every opaque pixel, so the white
+ * application tile and the drop shadows must go, and the whale itself has to be opaque rather
+ * than filled from a gradient the menu bar would not be able to tint.
+ * @param svg - SVG document with a `tray-glyph` group.
+ * @returns The same document carrying only the glyph, filled solid.
+ */
+export function templateGlyphSvg(svg: string): string {
+  if (!svg.includes('<g id="tray-glyph"')) throw new Error('tray icon: SVG requires a tray-glyph group')
+  return svg
+    // The tile and its two gradient overlays are the parts a menu bar must not show.
+    .replace(/<rect\b[^>]*\/>/g, '')
+    // Shadows bake a grey halo into the mask, which macOS would paint as a solid smudge.
+    .replace(/\s+filter="url\(#[^)]*\)"/g, '')
+    // A gradient fill survives the removal of its defs only as nothing at all.
+    .replace(/fill="url\(#paint\d+_linear_[^)]*\)"/g, 'fill="#000000"')
+}
+
+/**
+ * Rasterize a template glyph as a square alpha mask of one edge length.
+ * @param svg - SVG document already reduced by {@link templateGlyphSvg}.
+ * @param size - Bitmap edge to render.
+ * @returns PNG bytes; every colour channel is black and only alpha varies.
+ */
+export async function renderTemplateIcon(svg: string, size: number): Promise<Buffer> {
+  // Render large and trim to the glyph first: resizing the whole 1024-unit document down to a
+  // menu bar edge would shrink the whale into the padding that surrounds it in the app icon.
+  const trimmed = sharp(Buffer.from(svg), { density: 220 }).trim()
+  const { data, info } = await trimmed
+    .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  for (let at = 0; at < data.length; at += info.channels) {
+    data[at] = 0
+    data[at + 1] = 0
+    data[at + 2] = 0
+  }
+  return sharp(data, { raw: { width: info.width, height: info.height, channels: info.channels } })
+    .png()
+    .toBuffer()
+}
+
 function pngDimensions(png: Buffer): { width: number; height: number } {
   if (png.length < 24 || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) throw new Error('tray icon: bitmap is not a PNG stream')
   return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }
@@ -118,6 +177,11 @@ async function main(): Promise<void> {
   const entries = await renderTrayIconEntries(await readFile(TRAY_ICON_PATHS.source))
   await writeFile(TRAY_ICON_PATHS.output, packIco(entries))
   console.info(`tray icon: wrote ${TRAY_ICON_PATHS.output} with ${entries.map(entry => String(entry.size)).join(', ')} px bitmaps`)
+  const darwinSvg = templateGlyphSvg((await readFile(TRAY_ICON_PATHS.darwinSource)).toString('utf8'))
+  await writeFile(TRAY_ICON_PATHS.darwinOutput, await renderTemplateIcon(darwinSvg, DARWIN_TRAY_ICON_EDGES.base))
+  await writeFile(TRAY_ICON_PATHS.darwinOutputRetina, await renderTemplateIcon(darwinSvg, DARWIN_TRAY_ICON_EDGES.retina))
+  console.info(`tray icon: wrote ${TRAY_ICON_PATHS.darwinOutput} at ${String(DARWIN_TRAY_ICON_EDGES.base)} px`
+    + ` and its ${String(DARWIN_TRAY_ICON_EDGES.retina)} px Retina double`)
 }
 
 if (process.argv[1] !== undefined && import.meta.filename === resolve(process.argv[1])) await main()

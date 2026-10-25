@@ -13,6 +13,33 @@ import { writeDesktopStartupSettings, type DesktopStartupSettings } from './sett
 /** Command-line marker stored in the login item; the shell reads it back on the next login launch. */
 export const DESKTOP_LOGIN_ITEM_ARG = '--dsh-login-item'
 
+/** What the operating system lets the shell promise about its own launch. */
+export interface DesktopStartupCapabilities {
+  /** Whether the operating system can start the shell at login through Electron's login items. */
+  readonly launchAtLogin: boolean
+  /** Whether a login launch may stay hidden; it needs a tray as the way back. */
+  readonly startSilently: boolean
+}
+
+/** Nothing is promised on a platform whose login items Electron does not write. */
+const NO_STARTUP_CAPABILITIES: DesktopStartupCapabilities = { launchAtLogin: false, startSilently: false }
+
+/**
+ * Which of the startup preferences the platform can actually honour.
+ *
+ * Electron implements login items on Windows and macOS only, and the tray that a quiet start
+ * leaves behind ships on those two platforms only. A platform without either gets neither
+ * toggle, so the menu never offers a promise the operating system would silently drop.
+ * @param platform - Platform to evaluate; defaults to the running one.
+ * @returns The supported preferences.
+ */
+export function resolveDesktopStartupCapabilities(
+  platform: NodeJS.Platform = process.platform,
+): DesktopStartupCapabilities {
+  if (platform !== 'win32' && platform !== 'darwin') return NO_STARTUP_CAPABILITIES
+  return { launchAtLogin: true, startSilently: true }
+}
+
 /**
  * Whether this process was started by the registered login item.
  * The argument is authoritative: `wasOpenedAtLogin` is a per-platform hint that Electron

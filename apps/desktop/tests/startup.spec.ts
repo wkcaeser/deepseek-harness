@@ -6,6 +6,7 @@ import {
   DESKTOP_LOGIN_ITEM_ARG,
   isDesktopLoginItemLaunch,
   isDesktopSilentStart,
+  resolveDesktopStartupCapabilities,
   syncDesktopLoginItem,
   updateDesktopStartup,
 } from '../src/startup.ts'
@@ -31,6 +32,19 @@ function userData(): string {
   onTestFinished(() => { rmSync(directory, { recursive: true, force: true }) })
   return directory
 }
+
+it('promises both preferences only on a platform whose login items Electron writes', () => {
+  for (const platform of ['win32', 'darwin'] as const) {
+    expect(resolveDesktopStartupCapabilities(platform)).toEqual({ launchAtLogin: true, startSilently: true })
+  }
+  // Linux has neither login items nor a tray here, so it must offer neither toggle rather
+  // than show a switch the operating system would silently ignore.
+  for (const platform of ['linux', 'freebsd', 'aix'] as const) {
+    expect(resolveDesktopStartupCapabilities(platform)).toEqual({ launchAtLogin: false, startSilently: false })
+  }
+  // The running platform is the default, and it is one of the two that answer.
+  expect(resolveDesktopStartupCapabilities()).toEqual(resolveDesktopStartupCapabilities(process.platform))
+})
 
 it('recognises a login launch only by the marker stored in the login item', () => {
   process.argv = ['/app/DeepSeek Harness.exe']

@@ -19,7 +19,8 @@ export interface DesktopElectronBuilderConfig {
   readonly extraResources: readonly [
     { readonly from: string, readonly to: 'runtime' },
     { readonly from: string, readonly to: 'icon.png' },
-    ...{ readonly from: string, readonly to: 'tray.ico' }[],
+    // Windows ships the multi-size ICO; macOS ships the menu bar template and its Retina double.
+    ...{ readonly from: string, readonly to: 'tray.ico' | 'tray-darwin.png' | 'tray-darwin@2x.png' }[],
   ]
   readonly mac: {
     readonly extendInfo: {

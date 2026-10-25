@@ -158,8 +158,13 @@ export function createElectronBuilderConfig(
     extraResources: [
       { from: buildPaths.runtime, to: 'runtime' },
       { from: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
-      // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
+      // Windows scales one multi-size ICO by display; macOS tints a template PNG and loads the
+      // `@2x` double beside it on a Retina menu bar.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
+      ...(packagesMacOS ? [
+        { from: fileURLToPath(new URL('../resources/tray-darwin.png', import.meta.url)), to: 'tray-darwin.png' },
+        { from: fileURLToPath(new URL('../resources/tray-darwin@2x.png', import.meta.url)), to: 'tray-darwin@2x.png' },
+      ] : []),
     ],
     mac: {
       icon: fileURLToPath(new URL('../resources/icon-macos.png', import.meta.url)),

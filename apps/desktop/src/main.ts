@@ -58,7 +58,12 @@ import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
 import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
 import { readDesktopSettings, type DesktopStartupSettings } from './settings.ts'
 import { readDesktopLocaleCache, writeDesktopLocaleCache } from './locale-cache.ts'
-import { isDesktopSilentStart, syncDesktopLoginItem, updateDesktopStartup } from './startup.ts'
+import {
+  isDesktopSilentStart,
+  resolveDesktopStartupCapabilities,
+  syncDesktopLoginItem,
+  updateDesktopStartup,
+} from './startup.ts'
 import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
@@ -369,11 +374,13 @@ async function main(): Promise<void> {
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
   /** Startup preferences; the menu toggles replace this value and rewrite the document. */
   let startupSettings: DesktopStartupSettings = desktopSettings.startup
+  /** What this platform can actually honour; the menu offers a preference only when it is here. */
+  const startupCapabilities = resolveDesktopStartupCapabilities()
   /** The tray is what a quiet start leaves behind, so only a platform that ships one goes quiet. */
-  const trayAvailable = process.platform === 'win32'
+  const trayAvailable = startupCapabilities.startSilently
   const silentStart = isDesktopSilentStart(startupSettings, trayAvailable)
   // Re-assert the registration so the login item keeps following this installation.
-  syncDesktopLoginItem(startupSettings.launchAtLogin)
+  if (startupCapabilities.launchAtLogin) syncDesktopLoginItem(startupSettings.launchAtLogin)
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -1065,13 +1072,18 @@ async function main(): Promise<void> {
       refreshApplicationMenu()
     }
     const messages = currentDesktopLocale().messages
-    return [
-      { type: 'separator' },
-      { type: 'checkbox', checked: startupSettings.launchAtLogin, label: messages.launchAtLoginMenu,
-        click: () => { toggle({ launchAtLogin: !startupSettings.launchAtLogin }) } },
-      { type: 'checkbox', checked: startupSettings.startSilently, label: messages.startSilentlyMenu,
-        click: () => { toggle({ startSilently: !startupSettings.startSilently }) } },
-    ]
+    // A preference the operating system would silently drop is not offered at all, and the
+    // separator belongs to the group only while the group is there.
+    const items: MenuItemConstructorOptions[] = []
+    if (startupCapabilities.launchAtLogin) {
+      items.push({ type: 'checkbox', checked: startupSettings.launchAtLogin, label: messages.launchAtLoginMenu,
+        click: () => { toggle({ launchAtLogin: !startupSettings.launchAtLogin }) } })
+    }
+    if (startupCapabilities.startSilently) {
+      items.push({ type: 'checkbox', checked: startupSettings.startSilently, label: messages.startSilentlyMenu,
+        click: () => { toggle({ startSilently: !startupSettings.startSilently }) } })
+    }
+    return items.length === 0 ? [] : [{ type: 'separator' }, ...items]
   }
   const applicationItems = (): MenuItemConstructorOptions[] => [
     // Windows has no system About panel; Electron's fallback is a plain
@@ -1111,11 +1123,19 @@ async function main(): Promise<void> {
     tray?.relabel()
   }
   refreshApplicationMenu()
-  const trayIconPath = development ? join(app.getAppPath(), 'resources', 'tray-windows.ico') : join(process.resourcesPath, 'tray.ico')
-  if (process.platform === 'win32') {
+  const windowsTrayIconPath = development
+    ? join(app.getAppPath(), 'resources', 'tray-windows.ico') : join(process.resourcesPath, 'tray.ico')
+  // A macOS menu bar item is a template image: the system paints it, so it ships as an alpha mask
+  // and must never carry the white tile of the application icon.
+  const darwinTrayIconPath = development
+    ? join(app.getAppPath(), 'resources', 'tray-darwin.png') : join(process.resourcesPath, 'tray-darwin.png')
+  if (startupCapabilities.startSilently) {
     // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
     try {
-      tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
+      tray = new DesktopTray({
+        iconPath: process.platform === 'darwin' ? darwinTrayIconPath : windowsTrayIconPath,
+        template: process.platform === 'darwin',
+        locale: currentDesktopLocale,
         extraItems: startupMenuItems,
         open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
     } catch (error) { console.warn('desktop tray: unavailable', error) }
@@ -1134,7 +1154,7 @@ async function main(): Promise<void> {
     focus: () => { if (process.platform === 'darwin') app.focus({ steal: true }) },
     // The task dialog draws its main icon at the system icon size; the multi-size ICO yields that
     // size directly, where the 1024 px PNG would be scaled down by GDI.
-    ...(process.platform === 'win32' ? { icon: nativeImage.createFromPath(trayIconPath) } : {}),
+    ...(process.platform === 'win32' ? { icon: nativeImage.createFromPath(windowsTrayIconPath) } : {}),
   })
 
   if (process.platform === 'win32') {
