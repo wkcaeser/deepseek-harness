@@ -157,6 +157,25 @@ try {
     $results.Add('welcome-ready-before-first-show')
     $results.Add('successful-install-paints-100-before-finish')
 
+    # A complete app tree remains replaceable when it was registered under another app ID.
+    $registeredKey = 'HKCU:\Software\' + $RegistryKey
+    $foreignRegisteredKey = $registeredKey + '.other-identity'
+    if (Test-Path -LiteralPath $foreignRegisteredKey) { Remove-Item -LiteralPath $foreignRegisteredKey -Force }
+    Rename-Item -LiteralPath $registeredKey -NewName ($RegistryKey + '.other-identity')
+    try {
+        $process = Start-Setup light
+        $bounds = [InstallerCapture]::Bounds([InstallerCapture]::Find($process.Id))
+        Click-Control $process $copy.INSTALLER_INSTALL
+        Finish-Setup $process $false light $bounds
+        $registration = Get-ItemProperty -LiteralPath $registeredKey
+        if ($registration.InstallLocation.TrimEnd('\') -ne $installPath) {
+            throw 'Installation did not restore its registered installation directory'
+        }
+    } finally {
+        if (Test-Path -LiteralPath $foreignRegisteredKey) { Remove-Item -LiteralPath $foreignRegisteredKey -Force }
+    }
+    $results.Add('complete-installation-accepted-with-foreign-registration')
+
     $lockedFile = [IO.File]::Open($appPath, 'Open', 'Read', 'Read')
     try {
         $process = Start-Setup light
